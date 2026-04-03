@@ -117,6 +117,36 @@ def select_cols(df: pd.DataFrame, include_answer: bool) -> pd.DataFrame:
 
 # ── Main entry point (called by the Eris platform) ───────────────────────────
 
+def _find_datasets_dir(raw: Path) -> Path:
+    """
+    Locate the directory that contains per-language subfolders.
+    Handles two layouts the platform may provide:
+      A)  raw/extracted_datasets/bengali/...
+      B)  raw/bengali/...
+    """
+    candidate = raw / "extracted_datasets"
+    if candidate.is_dir():
+        return candidate
+
+    # Check if raw itself directly contains language folders
+    for name in LANG_MAP:
+        if (raw / name).is_dir():
+            return raw
+
+    # Last resort: walk one level deep for any directory that holds language folders
+    for child in raw.iterdir():
+        if child.is_dir():
+            for name in LANG_MAP:
+                if (child / name).is_dir():
+                    return child
+
+    raise FileNotFoundError(
+        f"Could not locate language subfolders under {raw}.\n"
+        f"Directory tree:\n" +
+        "\n".join(f"  {p}" for p in sorted(raw.rglob("*")) if p.is_dir())
+    )
+
+
 def prepare(raw: Path, public: Path, private: Path) -> None:
     """
     Transform raw MILU parquet files into public/private CSV splits.
@@ -132,12 +162,8 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     public.mkdir(parents=True, exist_ok=True)
     private.mkdir(parents=True, exist_ok=True)
 
-    datasets_dir = raw / "extracted_datasets"
-    if not datasets_dir.exists():
-        # Fallback: raw itself may be the extracted_datasets root
-        datasets_dir = raw
-
-    rng = random.Random(SEED)
+    datasets_dir = _find_datasets_dir(raw)
+    print(f"Reading language folders from: {datasets_dir}")
 
     train_frames = []
     test_frames  = []
@@ -178,6 +204,18 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
                 print(f"  test   {lang_folder.name}: SKIPPED — {exc}")
         else:
             print(f"  test   {lang_folder.name}: no test/ dir, skipping")
+
+    # ── Guard against empty frames ────────────────────────────────────────────
+    if not train_frames:
+        raise RuntimeError(
+            "No validation splits found. Check that language folders contain a "
+            f"'validation/' subdirectory with parquet files. Searched: {datasets_dir}"
+        )
+    if not test_frames:
+        raise RuntimeError(
+            "No test splits found. Check that language folders contain a "
+            f"'test/' subdirectory with parquet files. Searched: {datasets_dir}"
+        )
 
     # ── Build train split ─────────────────────────────────────────────────────
     train_df = pd.concat(train_frames, ignore_index=True)
