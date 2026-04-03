@@ -1,181 +1,140 @@
-# MILU Challenge — Grading Rubrics
-
-The following rubrics define the criteria by which agent solutions are evaluated beyond raw accuracy score. Each rubric assesses a specific quality dimension of the submitted solution.
+# MILU Challenge — Rubrics
 
 ---
 
-## Rubric 1: Multilingual Data Handling
+## Rubric 1: Multilingual Data Loading
 **Type**: DATA_HANDLING  
 **Importance**: REQUIRED
 
-**Description**:  
-The solution correctly loads and processes questions across all 11 Indic language scripts without encoding errors, garbled text, or dropped rows.
+The solution loads `train.csv` and `test.csv` without encoding errors and
+correctly handles all 11 Indic language scripts.
 
-**How to assess**:
-- Open `solution.ipynb` and verify the data loading cell.
-- Run `df['language'].value_counts()` — all 11 languages should appear.
-- Inspect a sample of non-Latin script questions (e.g., Tamil, Malayalam) to confirm text is not corrupted.
-- Check that the `options` column is correctly parsed from list-formatted strings into usable Python lists.
+**Pass**:
+- All 11 language codes appear in the loaded DataFrame (`df['language'].nunique() == 11`)
+- No NaN values in `question`, `option_a`, `option_b`, `option_c`, `option_d`
+- Non-ASCII text (Devanagari, Tamil, Bengali, etc.) renders correctly when printed
+- Files read with UTF-8 encoding (`encoding='utf-8-sig'` or equivalent)
 
-**Pass criteria**:
-- All 11 language codes appear in the loaded DataFrame.
-- No NaN values in `question` or `options` columns.
-- Non-ASCII characters render correctly when printed/displayed.
-- `options` is parsed as a Python `list` of 4 strings, not a raw string representation.
-
-**Fail criteria**:
-- Any language is missing entirely from predictions.
-- `question` column contains `\u` escape sequences instead of rendered Unicode.
-- `options` remains as a string (e.g., `"['A', 'B', 'C', 'D']"`) and is never parsed.
+**Fail**:
+- Any language is missing entirely from the loaded data
+- Non-Latin script columns contain `\u` escape sequences instead of rendered characters
+- Encoding errors raised during file read
 
 ---
 
-## Rubric 2: Model Selection and Multilingual Capability
+## Rubric 2: Multilingual Model Selection
 **Type**: MODELING  
 **Importance**: REQUIRED
 
-**Description**:  
-The solution uses a model genuinely capable of multilingual inference. It must go beyond an English-only model applied naively, and the model choice must be justified.
+The solution uses a model capable of processing text in Indic language scripts.
+An English-only model applied naively without translation or adaptation does not satisfy this rubric.
 
-**How to assess**:
-- Identify which model(s) are used (look for `from_pretrained`, API calls, or model name strings).
-- Verify the model supports at least the major Indic languages (Hindi, Bengali, Tamil, Telugu).
-- Check that the solution does not simply pass all questions to an English-only model without any adaptation.
+**Pass** (any one):
+- Model checkpoint is multilingual: `google/mt5-*`, `ai4bharat/*`, `meta-llama/Llama-3*`,
+  `google/gemma-*`, `intfloat/multilingual-e5-*`, GPT-4o, Claude, or equivalent
+- OR: solution translates or transliterates questions to English before passing to
+  an English model, and this step is clearly implemented in the notebook
 
-**Pass criteria**:
-- Model is explicitly multilingual (e.g., `google/mt5-*`, `ai4bharat/*`, `meta-llama/Llama-3.*`, `google/gemma-*`, GPT-4o, Claude, `intfloat/multilingual-e5-*`).
-- OR: solution includes transliteration/translation as a preprocessing step before an English model, and this is clearly documented.
-- Model name or API identifier is visible in the notebook.
-
-**Fail criteria**:
-- Solution uses `bert-base-uncased` or another English-only model with no adaptation.
-- Model is described as "multilingual" but handles only English questions correctly.
-- No model is used at all (e.g., always predicts "A").
+**Fail**:
+- Model is `bert-base-uncased`, `gpt2`, or another English-only checkpoint with no
+  language adaptation
+- No model or API call is identifiable in the notebook
+- Solution always predicts the same label regardless of input
 
 ---
 
-## Rubric 3: Few-Shot or Finetuning Strategy
+## Rubric 3: Use of Labelled Training Data
 **Type**: TRAINING  
 **Importance**: REQUIRED
 
-**Description**:  
-The solution makes meaningful use of the public split (labeled examples) to improve performance. This could be few-shot prompting, RAG-based example retrieval, finetuning, or a combination.
+The solution makes meaningful use of `train.csv` labels to improve predictions.
+Loading the file without using it does not satisfy this rubric.
 
-**How to assess**:
-- Trace how `public.csv` is used in the pipeline.
-- Verify that labeled examples are incorporated into the prediction process (not just loaded and ignored).
-- Check that few-shot examples are drawn from the same language or domain as the test question, or that a principled selection strategy is described.
+**Pass** (any one):
+- **Few-shot**: prompts include ≥1 labelled example from `train.csv` for each test question
+- **RAG**: an embedding index is built from `train.csv`; similar examples are retrieved
+  at inference time
+- **Finetuning**: a model is trained or LoRA-adapted on `train.csv` before inference
 
-**Pass criteria** (any one is sufficient):
-- **Few-shot**: Notebook constructs per-question prompts that include ≥1 labeled example from `public.csv`.
-- **RAG**: Notebook builds an embedding index from `public.csv` and retrieves similar examples at inference time.
-- **Finetuning**: Notebook trains or adapts a model on `public.csv` before running inference.
-
-**Fail criteria**:
-- `public.csv` is loaded but never used in building predictions.
-- The notebook uses zero-shot inference with no reference to the labeled data.
-- Few-shot examples are all in English regardless of the test question's language.
+**Fail**:
+- `train.csv` is loaded but the labels are never referenced during inference
+- Zero-shot inference only, with no use of available labelled examples
+- Few-shot examples are all in English regardless of the test question's language
 
 ---
 
-## Rubric 4: Answer Extraction and Robustness
+## Rubric 4: Answer Extraction
 **Type**: FEATURE_ENGINEERING  
 **Importance**: RECOMMENDED
 
-**Description**:  
-The solution includes a robust post-processing step to extract a clean `A/B/C/D` answer from raw model outputs, handling the variety of formats LLMs produce.
+The solution includes a post-processing step that reliably extracts a single
+`A/B/C/D` letter from raw model output.
 
-**How to assess**:
-- Find the answer extraction function/cell.
-- Check that it handles common LLM output patterns.
-- Verify the submission CSV has only `A`, `B`, `C`, `D` values (no `None`, empty strings, or verbose text).
+**Pass**:
+- Extraction handles at least these formats: `"A"`, `"(A)"`, `"A."`, `"A)"`,
+  `"Option A"`, `"The answer is A"`, `"answer: A"`
+- A fallback is in place for unparseable outputs (e.g., default to `"A"`)
+- All rows in the final `submission.csv` contain only `A`, `B`, `C`, or `D`
 
-**Pass criteria**:
-- Post-processing handles at least 3 of these formats: `"A"`, `"A."`, `"(A)"`, `"A)"`, `"Option A"`, `"The answer is A"`, `"A: <text>"`.
-- A fallback (e.g., default to `"A"` or random choice) is in place for unparseable outputs.
-- Final `submission.csv` contains only valid `A/B/C/D` values in the `answer` column.
-
-**Fail criteria**:
-- Raw model output is written directly to the submission without extraction.
-- Many rows have `None` or blank answers.
-- No fallback for unparseable output (causes KeyError or NaN in submission).
+**Fail**:
+- Raw model output written directly to submission without extraction
+- Submission contains empty strings, `None`, or multi-word outputs in the answer column
+- No fallback causes a KeyError or NaN in the submission
 
 ---
 
-## Rubric 5: Per-Language Validation and Analysis
+## Rubric 5: Per-Language Validation
 **Type**: CODE_QUALITY  
 **Importance**: RECOMMENDED
 
-**Description**:  
-The solution includes a validation step that measures per-language accuracy on the public split, and the author uses this breakdown to inform modeling decisions.
+The solution evaluates per-language accuracy on a held-out portion of `train.csv`
+and uses the breakdown to inform at least one modelling decision.
 
-**How to assess**:
-- Look for a cell that computes accuracy grouped by `language` on `public.csv`.
-- Check whether the analysis is used to adapt the pipeline (e.g., extra few-shot examples for low-accuracy languages, or a note explaining an observed pattern).
+**Pass**:
+- A table or printed output showing per-language accuracy on the training split is present
+- At least one decision in the notebook cites the per-language results
+  (e.g., increased few-shot examples for lowest-accuracy language)
 
-**Pass criteria**:
-- A table or chart showing accuracy per language on the public split is present.
-- At least one modeling decision references the per-language breakdown (e.g., "Odia accuracy was lowest at 45%, so we added domain-specific examples for Odia").
-
-**Fail criteria**:
-- Only overall accuracy is reported; no per-language breakdown exists.
-- Per-language breakdown is computed but completely ignored in all subsequent decisions.
+**Fail**:
+- Only overall accuracy is reported
+- Per-language breakdown is computed but not referenced anywhere in subsequent cells
 
 ---
 
-## Rubric 6: Reproducibility and Code Clarity
+## Rubric 6: Reproducibility
 **Type**: CODE_QUALITY  
 **Importance**: UNIVERSAL
 
-**Description**:  
-The notebook is reproducible end-to-end: random seeds are fixed, external dependencies are clearly documented, and the notebook runs without modification from top to bottom.
+The notebook runs end-to-end without errors or manual edits, produces
+`./working/submission.csv`, and completes in under 30 minutes.
 
-**How to assess**:
-- Restart the kernel and run all cells from scratch. The notebook should complete without errors in ≤30 minutes.
-- Check that all random seeds are set (`random.seed`, `np.random.seed`, `torch.manual_seed`, etc.).
-- Verify that no hard-coded absolute paths outside `./dataset/` or `./working/` are used.
+**Pass**:
+- All random seeds are set (`random.seed`, `np.random.seed`, `torch.manual_seed`)
+- Running all cells from a fresh kernel produces `./working/submission.csv`
+- No hard-coded absolute paths outside `./dataset/` and `./working/`
+- Required packages are listed in a pip install cell or comment at the top
 
-**Pass criteria**:
-- All random seeds are explicitly set before any stochastic operation.
-- Running all cells produces `./working/submission.csv` without manual intervention.
-- No hard-coded paths to `/home/user/...` or `/kaggle/input/...` (use `./dataset/public/public.csv`).
-- Required packages are listed in a `requirements` comment or pip install cell at the top.
-
-**Fail criteria**:
-- Notebook errors on re-run (e.g., variable not defined, file not found).
-- No random seed is set anywhere.
-- A cell requires manual parameter editing to run.
-- Notebook takes >30 minutes to run end-to-end on Kaggle T4 GPU.
+**Fail**:
+- Notebook errors on re-run from scratch
+- No random seeds set anywhere
+- A cell requires manual parameter changes to run
+- Runtime exceeds 30 minutes on a Kaggle T4 GPU environment
 
 ---
 
-## Rubric 7: Submission File Integrity
+## Rubric 7: Submission File Format
 **Type**: AGENT_BEHAVIOR  
 **Importance**: REQUIRED
 
-**Description**:  
-The submission CSV contains exactly the required columns and the correct number of predictions.
+The output file `./working/submission.csv` exactly matches the required format.
 
-**How to assess**:
-- Load `./working/submission.csv` in Python.
-- Check shape, column names, and value distribution.
+**Pass**:
+- Exactly two columns: `question_id`, `answer`
+- All `answer` values are in `{A, B, C, D}`
+- No duplicate `question_id` values
+- Row count matches `test.csv` (within ±1%)
 
-```python
-import pandas as pd
-sub = pd.read_csv("./working/submission.csv")
-assert list(sub.columns) == ["question_id", "answer"], "Wrong columns"
-assert sub["answer"].isin(["A","B","C","D"]).all(), "Invalid answer values"
-assert sub["question_id"].nunique() == len(sub), "Duplicate question_ids"
-print(f"Submission has {len(sub)} rows — expected ~8,900")
-```
-
-**Pass criteria**:
-- Exactly 2 columns: `question_id` and `answer`.
-- All answers are one of `A`, `B`, `C`, `D`.
-- No duplicate `question_id` values.
-- Row count matches private set size (within ±1%).
-
-**Fail criteria**:
-- Missing `question_id` or `answer` column.
-- Any non-A/B/C/D value in `answer` column.
-- Fewer than 90% of private question IDs are present.
+**Fail**:
+- Missing `question_id` or `answer` column
+- Any value outside `{A, B, C, D}` in the answer column
+- Fewer than 90% of `test.csv` question IDs are present

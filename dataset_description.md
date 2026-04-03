@@ -45,35 +45,45 @@ MILU (Multi-task Indic Language Understanding) is a large-scale multiple-choice 
 
 ## Dataset Schema
 
-### Public Split (provided to agents)
+### `train.csv` — labelled questions (provided to agents)
 
-| Column          | Type     | Description                                                                 |
-|-----------------|----------|-----------------------------------------------------------------------------|
-| `question_id`   | string   | Unique identifier for each question (e.g., `"hindi_0001"`)                  |
-| `language`      | string   | ISO language code (e.g., `"hin"`, `"ben"`, `"tam"`)                         |
-| `language_name` | string   | Human-readable language name (e.g., `"Hindi"`, `"Bengali"`, `"Tamil"`)     |
-| `domain`        | string   | Broad subject domain (e.g., `"STEM"`, `"Law & Governance"`)                |
-| `subject`       | string   | Specific subject (e.g., `"Physics"`, `"Constitutional Law"`)               |
-| `question`      | string   | The full question text in the target language                               |
-| `options`       | list[str]| List of 4 answer choices: `[A, B, C, D]`                                   |
-| `answer`        | string   | **Correct answer letter** — one of `"A"`, `"B"`, `"C"`, `"D"` (**public split only**) |
+| Column          | Type   | Description                                                             |
+|-----------------|--------|-------------------------------------------------------------------------|
+| `question_id`   | str    | Unique question identifier (e.g., `"hin_000042"`)                       |
+| `language`      | str    | ISO 639-3 code (e.g., `"hin"`, `"ben"`, `"tam"`)                        |
+| `language_name` | str    | Full language name (e.g., `"Hindi"`, `"Bengali"`, `"Tamil"`)            |
+| `domain`        | str    | Subject domain (e.g., `"STEM"`, `"Law & Governance"`)                   |
+| `subject`       | str    | Specific subject (e.g., `"Physics"`, `"Constitutional Law"`)            |
+| `question`      | str    | Question text in the target language script                             |
+| `option_a`      | str    | Answer choice A                                                         |
+| `option_b`      | str    | Answer choice B                                                         |
+| `option_c`      | str    | Answer choice C                                                         |
+| `option_d`      | str    | Answer choice D                                                         |
+| `answer`        | str    | Correct answer letter: `A`, `B`, `C`, or `D`                            |
 
-> **Note**: In the **private split** (test set), the `answer` column is withheld. Agents must predict the answer using only `question_id`, `language`, `domain`, `subject`, `question`, and `options`.
+### `test.csv` — unlabelled questions (agents must predict answers)
 
-### Private Split (ground truth — withheld from agents)
+Same schema as `train.csv` but **without** the `answer` column.
 
-Same schema as public split, including `answer`.
+### `sample_submission.csv` — all-A baseline
+
+| Column        | Type | Description                     |
+|---------------|------|---------------------------------|
+| `question_id` | str  | Question ID from `test.csv`     |
+| `answer`      | str  | Predicted answer (`A` baseline) |
 
 ---
 
 ## Split Sizes
 
-| Split   | Rows   | Purpose                                          |
-|---------|--------|--------------------------------------------------|
-| Public  | ~8,900 | Agent training, few-shot examples, validation    |
-| Private | ~8,900 | Ground truth for evaluation (answers withheld)   |
+| File                   | Rows   | Purpose                                       |
+|------------------------|--------|-----------------------------------------------|
+| `train.csv`            | ~8,900 | Labelled examples for few-shot / finetuning   |
+| `test.csv`             | ~8,900 | Unlabelled questions — agents predict answers |
+| `sample_submission.csv`| ~8,900 | All-A baseline in required submission format  |
 
-> The original MILU dataset provides a `validation` split (~8,933 examples) used as the **public split** for few-shot learning, and a `test` split (~79,617 examples) used to create the **private evaluation set** by subsampling.
+> `train.csv` is sourced from the MILU `validation` split (~8,933 examples).  
+> `test.csv` is a stratified sample from the MILU `test` split (~79,617 examples).
 
 ---
 
