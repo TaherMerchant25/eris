@@ -1,64 +1,70 @@
-# Multilingual Indic Question Answering
+# Zero-Shot Cross-Lingual Transfer for Indic Question Answering
 
 ## Overview
 
-You are given a collection of multiple-choice questions drawn from competitive
-examinations, textbooks, and government assessments across India. Questions span
-11 Indic languages and 8 subject domains including STEM, Law & Governance,
-Medicine, and Classical Literature.
+You are given labelled multiple-choice questions in six Indic languages. Your
+task is to predict correct answers for questions in five **completely different**
+languages for which you receive no labelled training examples.
 
-Your task is to assign a single answer label — A, B, C, or D — to every
-question in the test set.
+The six training languages are: Bengali, English, Hindi, Marathi, Tamil, Telugu.
+The five test languages are: Gujarati, Kannada, Malayalam, Odia, Punjabi.
 
-Questions are written in their native script (Devanagari, Tamil, Bengali, etc.).
-Generic English-only models perform substantially below multilingual models on
-this benchmark. Strategies that adapt to language and domain are likely to help.
+Training and test languages share no overlap. Solutions that simply memorise
+per-language patterns or fine-tune language-specific heads will fail on the test
+set. Genuine cross-lingual generalisation — through multilingual representations,
+translate-then-answer pipelines, or script-agnostic prompting — is required.
+
+This is not a general multilingual benchmark. It is a transfer learning challenge:
+how well can a system trained on six seen languages answer questions in five
+unseen ones?
 
 ## Evaluation
 
-Submissions are scored using **overall accuracy**:
+Submissions are scored using **accuracy on unseen languages only**:
 
 ```
-score = correct_predictions / total_questions
+score = correct_predictions / total_test_questions
 ```
 
-Accuracy is computed over all languages and domains jointly.
-A model predicting all-A scores approximately 0.250 (random chance over 4 options).
+Only questions from the five test languages (Gujarati, Kannada, Malayalam, Odia,
+Punjabi) are evaluated. Predictions for any other language ID are ignored.
 
-Per-language and per-domain breakdowns are logged but do not affect the final score.
+A model predicting all-A scores approximately 0.250. A system that copies
+per-language statistics from Hindi (the closest seen language) achieves roughly
+0.35–0.40.
 
 ## Dataset
 
-`public/train.csv` — labelled questions for training and few-shot examples:
+`public/train.csv` — labelled questions in six seen languages:
 
-| Column          | Type     | Description                                              |
-|-----------------|----------|----------------------------------------------------------|
-| `question_id`   | str      | Unique question identifier                               |
-| `language`      | str      | ISO 639-3 code: ben, guj, hin, kan, mal, mar, ory, pan, tam, tel, eng |
-| `language_name` | str      | Full language name (e.g., Hindi, Tamil, Bengali)         |
-| `domain`        | str      | Subject domain (e.g., STEM, Law & Governance, Medicine)  |
-| `subject`       | str      | Specific subject (e.g., Physics, Constitutional Law)     |
-| `question`      | str      | Question text in the target language script              |
-| `option_a`      | str      | Answer choice A                                          |
-| `option_b`      | str      | Answer choice B                                          |
-| `option_c`      | str      | Answer choice C                                          |
-| `option_d`      | str      | Answer choice D                                          |
-| `answer`        | str      | Correct answer letter: A, B, C, or D                     |
+| Column          | Type | Description                                              |
+|-----------------|------|----------------------------------------------------------|
+| `question_id`   | str  | Unique question identifier                               |
+| `language`      | str  | ISO 639-3 code: ben, eng, hin, mar, tam, tel             |
+| `language_name` | str  | Full language name                                       |
+| `domain`        | str  | Subject domain (e.g., STEM, Law & Governance, Medicine)  |
+| `subject`       | str  | Specific subject (e.g., Physics, Constitutional Law)     |
+| `question`      | str  | Question text in the target language script              |
+| `option_a`      | str  | Answer choice A                                          |
+| `option_b`      | str  | Answer choice B                                          |
+| `option_c`      | str  | Answer choice C                                          |
+| `option_d`      | str  | Answer choice D                                          |
+| `answer`        | str  | Correct answer letter: A, B, C, or D                     |
 
-`public/test.csv` — unlabelled questions to predict:
+`public/test.csv` — unlabelled questions in five unseen languages:
 
-| Column          | Type     | Description                                              |
-|-----------------|----------|----------------------------------------------------------|
-| `question_id`   | str      | Unique question identifier (use in submission)           |
-| `language`      | str      | ISO 639-3 language code                                  |
-| `language_name` | str      | Full language name                                       |
-| `domain`        | str      | Subject domain                                           |
-| `subject`       | str      | Specific subject                                         |
-| `question`      | str      | Question text in the target language script              |
-| `option_a`      | str      | Answer choice A                                          |
-| `option_b`      | str      | Answer choice B                                          |
-| `option_c`      | str      | Answer choice C                                          |
-| `option_d`      | str      | Answer choice D                                          |
+| Column          | Type | Description                                              |
+|-----------------|------|----------------------------------------------------------|
+| `question_id`   | str  | Unique question identifier (use in submission)           |
+| `language`      | str  | ISO 639-3 code: guj, kan, mal, ory, pan                  |
+| `language_name` | str  | Full language name                                       |
+| `domain`        | str  | Subject domain                                           |
+| `subject`       | str  | Specific subject                                         |
+| `question`      | str  | Question text in the target language script              |
+| `option_a`      | str  | Answer choice A                                          |
+| `option_b`      | str  | Answer choice B                                          |
+| `option_c`      | str  | Answer choice C                                          |
+| `option_d`      | str  | Answer choice D                                          |
 
 `public/sample_submission.csv` — expected output format (all-A baseline).
 
@@ -79,9 +85,10 @@ Requirements:
 
 ## Notes
 
-- Train and test sets are stratified across all 11 languages and 8 domains
+- `train.csv` contains no examples from Gujarati, Kannada, Malayalam, Odia, or Punjabi
+- `test.csv` contains only Gujarati, Kannada, Malayalam, Odia, and Punjabi questions
+- All five test languages use distinct scripts: Gujarati (Gujarati script), Kannada
+  (Kannada script), Malayalam (Malayalam script), Odia (Odia script), Punjabi (Gurmukhi)
+- Domain and subject distributions are consistent across train and test languages —
+  cross-domain generalisation is not required, only cross-lingual
 - Questions are independent — no cross-question context is needed
-- Options are provided as separate columns (`option_a` through `option_d`), not a list
-- Language codes follow ISO 639-3: `hin` = Hindi, `tam` = Tamil, `ben` = Bengali, etc.
-- Some questions reference India-specific legal, cultural, or historical knowledge not
-  well-represented in general English pretraining corpora

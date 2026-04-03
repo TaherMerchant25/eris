@@ -1,4 +1,4 @@
-# MILU: Multi-task Indic Language Understanding Benchmark
+# Zero-Shot Cross-Lingual Transfer: Indic Question Answering
 
 ## Overview
 

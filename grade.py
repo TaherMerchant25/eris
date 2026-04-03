@@ -1,7 +1,8 @@
 """
-grade.py — MILU Eris Challenge Grading Script
+grade.py — Zero-Shot Cross-Lingual Transfer Challenge Grading Script
 
-Scores a submission against the private ground truth using overall accuracy.
+Scores predictions on the five UNSEEN languages only:
+  Gujarati (guj), Kannada (kan), Malayalam (mal), Odia (ory), Punjabi (pan)
 
 Usage:
     python grade.py \
@@ -9,7 +10,7 @@ Usage:
         --solution ./working/submission.csv
 
 Output (stdout, JSON):
-    {"score": 0.7312, "details": {...}}
+    {"score": 0.6241, "details": {...}}
 
 Exit codes:
     0 — success

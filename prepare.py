@@ -1,23 +1,23 @@
 """
-prepare.py — MILU Eris Challenge Dataset Preparation
+prepare.py — Zero-Shot Cross-Lingual Transfer Challenge
 
 The Eris platform calls:  prepare(raw, public, private)
 
-Raw input layout (pre-extracted from HuggingFace by the platform):
-  raw/
-    extracted_datasets/        ← or raw/ directly
-      <lang_folder>/           ← any name: "ben", "bengali", etc.
-        validation/
-          *.parquet
-        test/
-          *.parquet
-        dataset_dict.json
+Challenge framing:
+  SEEN languages  (train split, labelled): ben, eng, hin, mar, tam, tel
+  UNSEEN languages (test split, no labels): guj, kan, mal, ory, pan
+
+Raw input layout (pre-extracted from HuggingFace):
+  raw/extracted_datasets/<lang_folder>/
+    validation/ — Arrow shards
+    test/       — Arrow shards
+    dataset_dict.json
 
 Outputs:
-  public/train.csv             — labelled questions (from validation splits)
-  public/test.csv              — unlabelled questions (answers removed)
+  public/train.csv             — seen-language questions WITH answers
+  public/test.csv              — unseen-language questions WITHOUT answers
   public/sample_submission.csv — all-A baseline
-  private/private.csv          — test split WITH answers (for grade.py)
+  private/private.csv          — unseen-language questions WITH answers (grade.py only)
 """
 
 from pathlib import Path
@@ -29,7 +29,14 @@ from datasets import load_from_disk
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 SEED = 42
-TEST_SAMPLE_SIZE = 8900
+TEST_SAMPLE_SIZE = 4500   # rows sampled per unseen language group
+
+# ── Language split — the core of the challenge ────────────────────────────────
+# Agents receive labelled data ONLY for SEEN languages.
+# They must predict answers for UNSEEN languages with no labelled examples.
+
+SEEN_LANGS   = {"ben", "eng", "hin", "mar", "tam", "tel"}   # train split
+UNSEEN_LANGS = {"guj", "kan", "mal", "ory", "pan"}          # test split (evaluate on these)
 
 # Lookup table: any folder name variant → (iso_code, display_name)
 # Used when we CAN match a folder name; falls back gracefully when we can't.
@@ -158,52 +165,69 @@ def _select_cols(df: pd.DataFrame, include_answer: bool) -> pd.DataFrame:
 
 # ── Directory scanning ────────────────────────────────────────────────────────
 
+def _load_lang_folder(lang_folder: Path, lang_code: str, lang_name: str,
+                      split_name: str) -> pd.DataFrame | None:
+    """Load one split (validation or test) from a language folder."""
+    # Strategy A: DatasetDict (dataset_dict.json present)
+    if (lang_folder / "dataset_dict.json").exists():
+        try:
+            ds_dict = load_from_disk(str(lang_folder))
+            if split_name in ds_dict:
+                df = ds_dict[split_name].to_pandas()
+                df = _normalise(df, lang_code, lang_name)
+                print(f"    {lang_folder.name}/{split_name}: {len(df):,} rows (DatasetDict)")
+                return df
+        except Exception as exc:
+            print(f"    {lang_folder.name}: DatasetDict load failed ({exc}), trying split dir...")
+
+    # Strategy B: bare split subdirectory
+    split_dir = lang_folder / split_name
+    if split_dir.exists():
+        try:
+            df = _read_split(split_dir)
+            df = _normalise(df, lang_code, lang_name)
+            return df
+        except Exception as exc:
+            print(f"    SKIPPED {lang_folder.name}/{split_name}: {exc}")
+
+    return None
+
+
 def _collect_splits(datasets_dir: Path) -> tuple[list, list]:
     """
-    Walk datasets_dir and load validation + test splits for every language folder.
-    Supports two strategies:
-      A) DatasetDict per language folder (dataset_dict.json present) — load_from_disk
-      B) Bare validation/ and test/ subdirs containing Arrow/Parquet shards
+    Load data for all language folders.
+    SEEN languages  → train_frames  (validation split, answers kept)
+    UNSEEN languages → test_frames  (test split, answers stripped for public)
+
+    Both seen and unseen use their validation split for train (seen)
+    and test (unseen) respectively to maximise data quality.
     """
     train_frames: list[pd.DataFrame] = []
     test_frames:  list[pd.DataFrame] = []
 
     lang_folders = sorted(p for p in datasets_dir.iterdir() if p.is_dir())
-    print(f"  Language folders found: {[p.name for p in lang_folders]}\n")
+    print(f"  Language folders: {[p.name for p in lang_folders]}\n")
 
     for lang_folder in lang_folders:
         lang_code, lang_name = _lang_from_folder(lang_folder.name)
 
-        # Strategy A: DatasetDict saved with save_to_disk (dataset_dict.json present)
-        if (lang_folder / "dataset_dict.json").exists():
-            try:
-                ds_dict = load_from_disk(str(lang_folder))
-                if "validation" in ds_dict:
-                    df = ds_dict["validation"].to_pandas()
-                    df = _normalise(df, lang_code, lang_name)
-                    train_frames.append(df)
-                    print(f"    {lang_folder.name}/validation: {len(df):,} rows (DatasetDict)")
-                if "test" in ds_dict:
-                    df = ds_dict["test"].to_pandas()
-                    df = _normalise(df, lang_code, lang_name)
-                    test_frames.append(df)
-                    print(f"    {lang_folder.name}/test:       {len(df):,} rows (DatasetDict)")
-                continue
-            except Exception as exc:
-                print(f"    {lang_folder.name}: DatasetDict load failed ({exc}), trying splits...")
+        if lang_code in SEEN_LANGS:
+            # Seen language → use validation split as labelled training data
+            df = _load_lang_folder(lang_folder, lang_code, lang_name, "validation")
+            if df is not None:
+                train_frames.append(df)
 
-        # Strategy B: bare split subdirectories
-        for split_name, frames in (("validation", train_frames), ("test", test_frames)):
-            split_dir = lang_folder / split_name
-            if split_dir.exists():
-                try:
-                    df = _read_split(split_dir)
-                    df = _normalise(df, lang_code, lang_name)
-                    frames.append(df)
-                except Exception as exc:
-                    print(f"    SKIPPED {lang_folder.name}/{split_name}: {exc}")
-            else:
-                print(f"    {lang_folder.name}/{split_name}: not found, skipping")
+        elif lang_code in UNSEEN_LANGS:
+            # Unseen language → use test split as the evaluation set
+            df = _load_lang_folder(lang_folder, lang_code, lang_name, "test")
+            if df is None:
+                # Fallback to validation split if test is unavailable
+                df = _load_lang_folder(lang_folder, lang_code, lang_name, "validation")
+            if df is not None:
+                test_frames.append(df)
+
+        else:
+            print(f"    {lang_folder.name} ({lang_code}): not in SEEN or UNSEEN — skipping")
 
     return train_frames, test_frames
 
@@ -263,22 +287,25 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
             "See directory tree above."
         )
 
-    # ── train.csv ─────────────────────────────────────────────────────────────
+    # ── train.csv (seen languages, labelled) ──────────────────────────────────
     train_df = pd.concat(train_frames, ignore_index=True)
     train_df = train_df.sample(frac=1, random_state=SEED).reset_index(drop=True)
     train_df = _assign_ids(train_df, "train")
     _select_cols(train_df, include_answer=True).to_csv(
         public / "train.csv", index=False, encoding="utf-8-sig"
     )
-    print(f"\ntrain.csv          → {len(train_df):,} rows")
+    print(f"\ntrain.csv          → {len(train_df):,} rows  "
+          f"(languages: {sorted(train_df['language'].unique())})")
 
-    # ── test.csv + private.csv ────────────────────────────────────────────────
+    # ── test.csv + private.csv (unseen languages, labels withheld) ────────────
     test_full = pd.concat(test_frames, ignore_index=True)
+
+    # Sample up to TEST_SAMPLE_SIZE rows, stratified by language
     test_df = (
         test_full
         .groupby("language", group_keys=False)
         .apply(lambda g: g.sample(
-            max(1, round(TEST_SAMPLE_SIZE * len(g) / len(test_full))),
+            min(len(g), max(1, round(TEST_SAMPLE_SIZE * len(g) / len(test_full)))),
             random_state=SEED,
         ))
         .reset_index(drop=True)
@@ -301,7 +328,9 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     }).to_csv(public / "sample_submission.csv", index=False)
     print(f"sample_submission  → {len(test_df):,} rows")
 
-    print("\nLanguage distribution (test):")
+    print(f"\nTrain languages (seen)  : {sorted(train_df['language'].unique())}")
+    print(f"Test  languages (unseen): {sorted(test_df['language'].unique())}")
+    print("\nTest language distribution:")
     print(test_df["language"].value_counts().to_string())
     print("\nDone.")
 

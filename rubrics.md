@@ -1,103 +1,111 @@
-# MILU Challenge — Rubrics
+# Zero-Shot Cross-Lingual Transfer — Rubrics
 
 ---
 
-## Rubric 1: Multilingual Data Loading
+## Rubric 1: No Test-Language Leakage in Training
 **Type**: DATA_HANDLING  
 **Importance**: REQUIRED
 
-The solution loads `train.csv` and `test.csv` without encoding errors and
-correctly handles all 11 Indic language scripts.
+The solution must not use any labelled or unlabelled data from the five test
+languages (Gujarati, Kannada, Malayalam, Odia, Punjabi) during model training
+or few-shot construction.
 
 **Pass**:
-- All 11 language codes appear in the loaded DataFrame (`df['language'].nunique() == 11`)
-- No NaN values in `question`, `option_a`, `option_b`, `option_c`, `option_d`
-- Non-ASCII text (Devanagari, Tamil, Bengali, etc.) renders correctly when printed
-- Files read with UTF-8 encoding (`encoding='utf-8-sig'` or equivalent)
+- Only `train.csv` rows are used to build the few-shot pool or fine-tune the model
+- No external datasets specific to guj, kan, mal, ory, or pan are loaded
+- The solution does not hardcode expected answer distributions for test languages
 
 **Fail**:
-- Any language is missing entirely from the loaded data
-- Non-Latin script columns contain `\u` escape sequences instead of rendered characters
-- Encoding errors raised during file read
+- Test-language questions from an external source are used as training examples
+- Few-shot examples are drawn from the test split
+- Label statistics from test languages are used to bias predictions
 
 ---
 
-## Rubric 2: Multilingual Model Selection
+## Rubric 2: Cross-Lingual Transfer Strategy
 **Type**: MODELING  
 **Importance**: REQUIRED
 
-The solution uses a model capable of processing text in Indic language scripts.
-An English-only model applied naively without translation or adaptation does not satisfy this rubric.
+The solution implements a genuine strategy for transferring knowledge from seen
+languages to unseen ones. Predicting a constant label or copying seen-language
+statistics does not satisfy this rubric.
 
 **Pass** (any one):
-- Model checkpoint is multilingual: `google/mt5-*`, `ai4bharat/*`, `meta-llama/Llama-3*`,
-  `google/gemma-*`, `intfloat/multilingual-e5-*`, GPT-4o, Claude, or equivalent
-- OR: solution translates or transliterates questions to English before passing to
-  an English model, and this step is clearly implemented in the notebook
+- Uses a multilingual model capable of representing all 11 Indic scripts
+  (e.g., `google/mt5-*`, `ai4bharat/*`, `intfloat/multilingual-e5-*`,
+  `meta-llama/Llama-3*`, GPT-4o, Claude)
+- OR translates test questions into a seen language before inference, using
+  a translation model or API
+- OR uses language-agnostic semantic embeddings to retrieve cross-lingual
+  few-shot examples from `train.csv`
 
 **Fail**:
-- Model is `bert-base-uncased`, `gpt2`, or another English-only checkpoint with no
-  language adaptation
-- No model or API call is identifiable in the notebook
-- Solution always predicts the same label regardless of input
+- English-only model with no translation or adaptation step
+- Model selected purely because it works for seen languages with no consideration
+  of unseen script support
+- Prediction is identical for all test languages (constant output)
 
 ---
 
-## Rubric 3: Use of Labelled Training Data
-**Type**: TRAINING  
-**Importance**: REQUIRED
-
-The solution makes meaningful use of `train.csv` labels to improve predictions.
-Loading the file without using it does not satisfy this rubric.
-
-**Pass** (any one):
-- **Few-shot**: prompts include ≥1 labelled example from `train.csv` for each test question
-- **RAG**: an embedding index is built from `train.csv`; similar examples are retrieved
-  at inference time
-- **Finetuning**: a model is trained or LoRA-adapted on `train.csv` before inference
-
-**Fail**:
-- `train.csv` is loaded but the labels are never referenced during inference
-- Zero-shot inference only, with no use of available labelled examples
-- Few-shot examples are all in English regardless of the test question's language
-
----
-
-## Rubric 4: Answer Extraction
+## Rubric 3: Cross-Lingual Few-Shot Retrieval
 **Type**: FEATURE_ENGINEERING  
 **Importance**: RECOMMENDED
 
-The solution includes a post-processing step that reliably extracts a single
-`A/B/C/D` letter from raw model output.
+Because no labelled examples exist for test languages, the solution uses
+cross-lingual semantic similarity to retrieve relevant examples from `train.csv`
+rather than relying on exact language matching.
 
 **Pass**:
-- Extraction handles at least these formats: `"A"`, `"(A)"`, `"A."`, `"A)"`,
-  `"Option A"`, `"The answer is A"`, `"answer: A"`
-- A fallback is in place for unparseable outputs (e.g., default to `"A"`)
-- All rows in the final `submission.csv` contain only `A`, `B`, `C`, or `D`
+- Few-shot examples are retrieved using multilingual embeddings
+  (e.g., `intfloat/multilingual-e5-large`, `LaBSE`, `paraphrase-multilingual-*`)
+- Retrieved examples come from `train.csv` and are from a seen language, not the
+  test language
+- Retrieval is based on question content or domain similarity, not random sampling
 
 **Fail**:
-- Raw model output written directly to submission without extraction
-- Submission contains empty strings, `None`, or multi-word outputs in the answer column
-- No fallback causes a KeyError or NaN in the submission
+- Zero-shot only — no training examples used at all
+- Few-shot examples are selected by language match (impossible for unseen languages)
+  without a cross-lingual fallback
 
 ---
 
-## Rubric 5: Per-Language Validation
+## Rubric 4: Seen-Language Validation
 **Type**: CODE_QUALITY  
 **Importance**: RECOMMENDED
 
-The solution evaluates per-language accuracy on a held-out portion of `train.csv`
-and uses the breakdown to inform at least one modelling decision.
+The solution validates its transfer approach on a held-out seen language before
+running on the unseen test set, demonstrating that the cross-lingual method
+actually works.
 
 **Pass**:
-- A table or printed output showing per-language accuracy on the training split is present
-- At least one decision in the notebook cites the per-language results
-  (e.g., increased few-shot examples for lowest-accuracy language)
+- One seen language is withheld from the few-shot pool and used as a proxy
+  for unseen-language evaluation (e.g., treat Telugu as "unseen" during development)
+- Per-language accuracy on this proxy is reported and used to tune the approach
+- Proxy validation accuracy is meaningfully above the all-A baseline (>0.30)
 
 **Fail**:
-- Only overall accuracy is reported
-- Per-language breakdown is computed but not referenced anywhere in subsequent cells
+- Validation is done only on languages the model has explicitly trained on
+  (in-language validation does not measure cross-lingual transfer ability)
+- No validation is performed before generating test predictions
+
+---
+
+## Rubric 5: Answer Extraction
+**Type**: FEATURE_ENGINEERING  
+**Importance**: RECOMMENDED
+
+The solution includes post-processing to extract a clean A/B/C/D letter from
+raw model output, with a fallback for unparseable outputs.
+
+**Pass**:
+- Handles at least: `"A"`, `"(A)"`, `"A."`, `"Answer: A"`, `"The answer is A"`
+- A fallback (e.g., `"A"`) is applied when no letter can be extracted
+- All rows in `submission.csv` contain only `A`, `B`, `C`, or `D`
+
+**Fail**:
+- Raw model output written directly to submission
+- Any NaN or empty string in the answer column
+- No fallback causes a crash or NaN
 
 ---
 
@@ -105,20 +113,19 @@ and uses the breakdown to inform at least one modelling decision.
 **Type**: CODE_QUALITY  
 **Importance**: UNIVERSAL
 
-The notebook runs end-to-end without errors or manual edits, produces
-`./working/submission.csv`, and completes in under 30 minutes.
+The notebook runs end-to-end without errors, produces `./working/submission.csv`,
+and completes within 30 minutes.
 
 **Pass**:
-- All random seeds are set (`random.seed`, `np.random.seed`, `torch.manual_seed`)
-- Running all cells from a fresh kernel produces `./working/submission.csv`
+- All random seeds are set before any stochastic operation
+- Running all cells from a fresh kernel produces a valid submission
 - No hard-coded absolute paths outside `./dataset/` and `./working/`
-- Required packages are listed in a pip install cell or comment at the top
+- Required packages listed in a pip install cell or comment at the top
 
 **Fail**:
 - Notebook errors on re-run from scratch
-- No random seeds set anywhere
-- A cell requires manual parameter changes to run
-- Runtime exceeds 30 minutes on a Kaggle T4 GPU environment
+- Runtime exceeds 30 minutes on a Kaggle T4 GPU
+- A cell requires manual edits to run
 
 ---
 
@@ -126,7 +133,7 @@ The notebook runs end-to-end without errors or manual edits, produces
 **Type**: AGENT_BEHAVIOR  
 **Importance**: REQUIRED
 
-The output file `./working/submission.csv` exactly matches the required format.
+`./working/submission.csv` matches the required format exactly.
 
 **Pass**:
 - Exactly two columns: `question_id`, `answer`
@@ -137,4 +144,4 @@ The output file `./working/submission.csv` exactly matches the required format.
 **Fail**:
 - Missing `question_id` or `answer` column
 - Any value outside `{A, B, C, D}` in the answer column
-- Fewer than 90% of `test.csv` question IDs are present
+- Fewer than 90% of `test.csv` question IDs present
