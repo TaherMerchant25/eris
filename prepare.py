@@ -29,8 +29,22 @@ import pandas as pd
 
 SEED = 42
 
-# Map raw folder names → ISO 639-3 codes and display names
+# Map raw folder names → (iso_code, display_name)
+# Covers both HuggingFace config names (ISO codes) and full language names
 LANG_MAP = {
+    # HuggingFace MILU config names (ISO 639-3)
+    "ben": ("ben", "Bengali"),
+    "eng": ("eng", "English"),
+    "guj": ("guj", "Gujarati"),
+    "hin": ("hin", "Hindi"),
+    "kan": ("kan", "Kannada"),
+    "mal": ("mal", "Malayalam"),
+    "mar": ("mar", "Marathi"),
+    "ory": ("ory", "Odia"),
+    "pan": ("pan", "Punjabi"),
+    "tam": ("tam", "Tamil"),
+    "tel": ("tel", "Telugu"),
+    # Full language name variants (in case platform uses them)
     "bengali":   ("ben", "Bengali"),
     "english":   ("eng", "English"),
     "gujarati":  ("guj", "Gujarati"),
@@ -164,6 +178,15 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
 
     datasets_dir = _find_datasets_dir(raw)
     print(f"Reading language folders from: {datasets_dir}")
+
+    # Show exactly what folders are present so failures are diagnosable
+    all_subdirs = sorted(p.name for p in datasets_dir.iterdir() if p.is_dir())
+    print(f"Found subdirectories: {all_subdirs}")
+    known   = [n for n in all_subdirs if n.lower() in LANG_MAP]
+    unknown = [n for n in all_subdirs if n.lower() not in LANG_MAP]
+    if unknown:
+        print(f"  Unrecognised (will skip): {unknown}")
+    print(f"  Matched language folders: {known}\n")
 
     train_frames = []
     test_frames  = []
