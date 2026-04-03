@@ -23,6 +23,7 @@ Outputs:
 from pathlib import Path
 import random
 import pandas as pd
+from datasets import load_from_disk
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -60,18 +61,47 @@ def _lang_from_folder(name: str) -> tuple[str, str]:
     return (key, name.title())
 
 
-# ── Parquet reading ───────────────────────────────────────────────────────────
+# ── Split reading ─────────────────────────────────────────────────────────────
 
 def _read_split(split_dir: Path) -> pd.DataFrame:
-    """Read all parquet files in a split directory (recursive)."""
+    """
+    Read a HuggingFace split directory (Arrow or Parquet shards).
+    split_dir is e.g.  .../bengali/validation/
+    """
+    # Prefer datasets.load_from_disk — handles Arrow IPC natively
+    try:
+        ds = load_from_disk(str(split_dir))
+        df = ds.to_pandas()
+        print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows (arrow)")
+        return df
+    except Exception:
+        pass
+
+    # Fallback: raw parquet shards
     shards = sorted(split_dir.rglob("*.parquet"))
-    if not shards:
-        raise FileNotFoundError(f"No .parquet files under {split_dir}")
-    frames = [pd.read_parquet(s) for s in shards]
-    df = pd.concat(frames, ignore_index=True)
-    print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows "
-          f"({len(shards)} shard(s))")
-    return df
+    if shards:
+        df = pd.concat([pd.read_parquet(s) for s in shards], ignore_index=True)
+        print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows "
+              f"({len(shards)} parquet shard(s))")
+        return df
+
+    # Fallback: raw arrow shards via pyarrow
+    arrow_files = sorted(split_dir.rglob("*.arrow"))
+    if arrow_files:
+        import pyarrow.ipc as ipc
+        import pyarrow as pa
+        tables = []
+        for f in arrow_files:
+            with pa.memory_map(str(f), "r") as src:
+                tables.append(ipc.open_file(src).read_all())
+        df = pa.concat_tables(tables).to_pandas()
+        print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows "
+              f"({len(arrow_files)} arrow shard(s))")
+        return df
+
+    raise FileNotFoundError(
+        f"No readable data files (.arrow or .parquet) found under {split_dir}"
+    )
 
 
 # ── Schema normalisation ──────────────────────────────────────────────────────
@@ -130,37 +160,50 @@ def _select_cols(df: pd.DataFrame, include_answer: bool) -> pd.DataFrame:
 
 def _collect_splits(datasets_dir: Path) -> tuple[list, list]:
     """
-    Walk datasets_dir and collect (lang_code, lang_name, df) for every
-    validation/ and test/ directory found, regardless of parent folder name.
+    Walk datasets_dir and load validation + test splits for every language folder.
+    Supports two strategies:
+      A) DatasetDict per language folder (dataset_dict.json present) — load_from_disk
+      B) Bare validation/ and test/ subdirs containing Arrow/Parquet shards
     """
     train_frames: list[pd.DataFrame] = []
     test_frames:  list[pd.DataFrame] = []
 
-    # Find all "validation" and "test" directories anywhere under datasets_dir
-    # (typically one level deep: datasets_dir/<lang>/validation/)
-    split_dirs = sorted(datasets_dir.rglob("*"))
-    val_dirs  = [p for p in split_dirs if p.is_dir() and p.name == "validation"]
-    test_dirs = [p for p in split_dirs if p.is_dir() and p.name == "test"]
+    lang_folders = sorted(p for p in datasets_dir.iterdir() if p.is_dir())
+    print(f"  Language folders found: {[p.name for p in lang_folders]}\n")
 
-    print(f"  Found {len(val_dirs)} validation/ dirs and {len(test_dirs)} test/ dirs\n")
+    for lang_folder in lang_folders:
+        lang_code, lang_name = _lang_from_folder(lang_folder.name)
 
-    for vd in val_dirs:
-        lang_code, lang_name = _lang_from_folder(vd.parent.name)
-        try:
-            df = _read_split(vd)
-            df = _normalise(df, lang_code, lang_name)
-            train_frames.append(df)
-        except Exception as exc:
-            print(f"    SKIPPED {vd}: {exc}")
+        # Strategy A: DatasetDict saved with save_to_disk (dataset_dict.json present)
+        if (lang_folder / "dataset_dict.json").exists():
+            try:
+                ds_dict = load_from_disk(str(lang_folder))
+                if "validation" in ds_dict:
+                    df = ds_dict["validation"].to_pandas()
+                    df = _normalise(df, lang_code, lang_name)
+                    train_frames.append(df)
+                    print(f"    {lang_folder.name}/validation: {len(df):,} rows (DatasetDict)")
+                if "test" in ds_dict:
+                    df = ds_dict["test"].to_pandas()
+                    df = _normalise(df, lang_code, lang_name)
+                    test_frames.append(df)
+                    print(f"    {lang_folder.name}/test:       {len(df):,} rows (DatasetDict)")
+                continue
+            except Exception as exc:
+                print(f"    {lang_folder.name}: DatasetDict load failed ({exc}), trying splits...")
 
-    for td in test_dirs:
-        lang_code, lang_name = _lang_from_folder(td.parent.name)
-        try:
-            df = _read_split(td)
-            df = _normalise(df, lang_code, lang_name)
-            test_frames.append(df)
-        except Exception as exc:
-            print(f"    SKIPPED {td}: {exc}")
+        # Strategy B: bare split subdirectories
+        for split_name, frames in (("validation", train_frames), ("test", test_frames)):
+            split_dir = lang_folder / split_name
+            if split_dir.exists():
+                try:
+                    df = _read_split(split_dir)
+                    df = _normalise(df, lang_code, lang_name)
+                    frames.append(df)
+                except Exception as exc:
+                    print(f"    SKIPPED {lang_folder.name}/{split_name}: {exc}")
+            else:
+                print(f"    {lang_folder.name}/{split_name}: not found, skipping")
 
     return train_frames, test_frames
 
