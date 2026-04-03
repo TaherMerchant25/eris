@@ -1,0 +1,41 @@
+{
+  "challenge_name": "MILU: Multilingual Indic LLM Benchmark Challenge",
+  "short_description": "Build an LLM pipeline to answer multiple-choice questions across 11 Indic languages. Maximize accuracy on culturally-grounded STEM, Law, Medicine, and Humanities questions.",
+  "dataset": "ai4bharat/MILU",
+  "dataset_license": "CC BY 4.0",
+  "metric": "accuracy",
+  "metric_description": "Overall fraction of correctly predicted answers (A/B/C/D) across all questions in the private evaluation set.",
+  "score_range": [0.0, 1.0],
+  "higher_is_better": true,
+  "baseline_score": 0.25,
+  "baseline_description": "Random uniform prediction over 4 choices",
+  "sota_score": 0.74,
+  "sota_description": "GPT-4o on full MILU benchmark (approximate)",
+  "submission_file": "working/submission.csv",
+  "submission_columns": ["question_id", "answer"],
+  "public_data_path": "dataset/public/public.csv",
+  "private_data_path": "dataset/private/private.csv",
+  "time_limit_minutes": 30,
+  "tags": [
+    "nlp",
+    "multilingual",
+    "indic-languages",
+    "multiple-choice-qa",
+    "llm",
+    "finetuning",
+    "few-shot-learning",
+    "benchmark"
+  ],
+  "difficulty": "hard",
+  "languages": ["ben", "guj", "hin", "kan", "mal", "mar", "ory", "pan", "tam", "tel", "eng"],
+  "domains": [
+    "STEM",
+    "Social Science",
+    "Humanities",
+    "Arts & Humanities",
+    "Law & Governance",
+    "Medicine & Health",
+    "Agriculture",
+    "General"
+  ]
+}
