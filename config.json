@@ -14,7 +14,7 @@
   "submission_file": "working/submission.csv",
   "submission_columns": ["question_id", "answer"],
   "public_data_path": "dataset/public/",
-  "private_data_path": "dataset/private/private.csv",
+  "private_data_path": "dataset/private/answers.csv",
   "time_limit_minutes": 30,
   "tags": [
     "nlp", "multilingual", "indic-languages", "zero-shot",
