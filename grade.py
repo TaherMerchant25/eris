@@ -1,78 +1,84 @@
 """
-grade.py — Zero-Shot Cross-Lingual Transfer Challenge Grading Script
+grade.py — Zero-Shot Cross-Lingual Transfer Challenge
 
-Scores predictions on the five UNSEEN languages only:
-  Gujarati (guj), Kannada (kan), Malayalam (mal), Odia (ory), Punjabi (pan)
+Compares agent submission against private/answers.csv and returns accuracy.
 
-Usage:
-    python grade.py \
-        --private  ./dataset/private/private.csv \
-        --solution ./working/submission.csv
+private/answers.csv contains ONLY:  question_id, answer
 
-Output (stdout, JSON):
-    {"score": 0.6241, "details": {...}}
+Eris platform calls:
+    grade(solution, private_answers)  →  float score in [0, 1]
 
-Exit codes:
-    0 — success
-    1 — file not found, missing columns, or format error
+CLI usage:
+    python grade.py --solution ./working/submission.csv \
+                    --private  ./dataset/private/answers.csv
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from typing import Union
 
 import pandas as pd
 
 VALID_ANSWERS  = {"A", "B", "C", "D"}
 DEFAULT_ANSWER = "A"
 
+TableInput = Union[str, os.PathLike, pd.DataFrame]
 
-def load_csv(path: str, label: str) -> pd.DataFrame:
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"{label} not found: {path}")
-    df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
+
+def _load(src: TableInput, label: str) -> pd.DataFrame:
+    if isinstance(src, pd.DataFrame):
+        df = src.copy()
+    elif hasattr(src, "read"):
+        # file-like object (StringIO, etc.)
+        df = pd.read_csv(src, dtype=str)
+    else:
+        path = os.fspath(src)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"{label} not found: {path}")
+        df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
     df.columns = df.columns.str.strip().str.lower()
     return df
 
 
-def validate_submission(sub: pd.DataFrame) -> pd.DataFrame:
-    missing = {"question_id", "answer"} - set(sub.columns)
-    if missing:
-        raise ValueError(f"submission.csv missing columns: {missing}")
+def _clean_answers(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    if "question_id" not in df.columns:
+        raise ValueError(f"{label} missing 'question_id' column. Got: {list(df.columns)}")
+    if "answer" not in df.columns:
+        raise ValueError(f"{label} missing 'answer' column. Got: {list(df.columns)}")
+    df = df[["question_id", "answer"]].copy()
+    df["answer"] = df["answer"].astype(str).str.strip().str.upper()
+    df["answer"] = df["answer"].replace({"0": "A", "1": "B", "2": "C", "3": "D"})
+    return df
 
-    sub = sub[["question_id", "answer"]].copy()
-    sub["answer"] = sub["answer"].astype(str).str.strip().str.upper()
 
-    invalid = ~sub["answer"].isin(VALID_ANSWERS)
-    n_invalid = int(invalid.sum())
-    if n_invalid:
-        print(f"WARNING: {n_invalid} invalid answer value(s) — defaulting to '{DEFAULT_ANSWER}'",
+def grade(solution: TableInput, private_answers: TableInput) -> float:
+    """
+    Returns accuracy as a float in [0.0, 1.0].
+    Eris calls float(grade(solution, private_answers)).
+    """
+    answers    = _load(private_answers, "answers.csv")
+    submission = _load(solution, "submission.csv")
+
+    answers    = _clean_answers(answers,    "answers.csv")
+    submission = _clean_answers(submission, "submission.csv")
+
+    # Remove duplicate question_ids (keep first)
+    answers    = answers.drop_duplicates("question_id", keep="first")
+    submission = submission.drop_duplicates("question_id", keep="first")
+
+    # Coerce invalid submission answers to default
+    invalid = ~submission["answer"].isin(VALID_ANSWERS)
+    if invalid.any():
+        print(f"WARNING: {int(invalid.sum())} invalid answer(s) defaulted to '{DEFAULT_ANSWER}'",
               file=sys.stderr)
-        sub.loc[invalid, "answer"] = DEFAULT_ANSWER
+        submission.loc[invalid, "answer"] = DEFAULT_ANSWER
 
-    dupes = sub.duplicated("question_id")
-    n_dupes = int(dupes.sum())
-    if n_dupes:
-        print(f"WARNING: {n_dupes} duplicate question_id(s) — keeping first occurrence",
-              file=sys.stderr)
-        sub = sub.drop_duplicates("question_id", keep="first")
-
-    return sub
-
-
-def grade(private_path: str, solution_path: str) -> dict:
-    private    = load_csv(private_path, "private.csv")
-    submission = load_csv(solution_path, "submission.csv")
-    submission = validate_submission(submission)
-
-    for col in ("question_id", "answer"):
-        if col not in private.columns:
-            raise ValueError(f"private.csv missing column: '{col}'")
-
-    private["answer"] = private["answer"].astype(str).str.strip().str.upper()
-
-    merged = private.merge(
+    # Left-join: every row in answers.csv must be evaluated
+    merged = answers.rename(columns={"answer": "correct"}).merge(
         submission.rename(columns={"answer": "predicted"}),
         on="question_id",
         how="left",
@@ -80,59 +86,33 @@ def grade(private_path: str, solution_path: str) -> dict:
 
     n_missing = int(merged["predicted"].isna().sum())
     if n_missing:
-        print(f"WARNING: {n_missing} question_id(s) absent from submission — "
-              f"defaulting to '{DEFAULT_ANSWER}'", file=sys.stderr)
+        print(f"WARNING: {n_missing} question_id(s) missing from submission — "
+              f"defaulted to '{DEFAULT_ANSWER}'", file=sys.stderr)
         merged["predicted"] = merged["predicted"].fillna(DEFAULT_ANSWER)
 
-    merged["correct"] = merged["answer"] == merged["predicted"]
-    total     = len(merged)
-    n_correct = int(merged["correct"].sum())
-    score     = n_correct / total if total > 0 else 0.0
-
-    # Per-language breakdown
-    per_language = {}
-    if "language" in merged.columns:
-        for lang, grp in merged.groupby("language"):
-            per_language[str(lang)] = {
-                "total":    len(grp),
-                "correct":  int(grp["correct"].sum()),
-                "accuracy": round(float(grp["correct"].mean()), 4),
-            }
-
-    # Per-domain breakdown
-    per_domain = {}
-    if "domain" in merged.columns:
-        for dom, grp in merged.groupby("domain"):
-            per_domain[str(dom)] = {
-                "total":    len(grp),
-                "correct":  int(grp["correct"].sum()),
-                "accuracy": round(float(grp["correct"].mean()), 4),
-            }
-
-    return {
-        "score": round(score, 6),
-        "details": {
-            "total_questions":    total,
-            "correct_predictions": n_correct,
-            "missing_predictions": n_missing,
-            "per_language":        per_language,
-            "per_domain":          per_domain,
-        },
-    }
+    total    = len(merged)
+    n_correct = int((merged["correct"] == merged["predicted"]).sum())
+    return round(n_correct / total, 6) if total > 0 else 0.0
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--private",  default="./dataset/private/private.csv")
-    parser.add_argument("--solution", default="./working/submission.csv")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Grade MILU cross-lingual challenge.")
+    parser.add_argument("--private",  default="./dataset/private/answers.csv",
+                        help="Path to private/answers.csv (question_id, answer)")
+    parser.add_argument("--solution", default="./working/submission.csv",
+                        help="Path to agent submission.csv (question_id, answer)")
     args = parser.parse_args()
 
     try:
-        result = grade(args.private, args.solution)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        score = grade(args.solution, args.private)
+        print(json.dumps({
+            "score":     score,
+            "min_score": 0.0,
+            "max_score": 1.0,
+        }, indent=2))
         sys.exit(0)
     except Exception as exc:
-        print(json.dumps({"error": str(exc), "score": 0.0}, indent=2))
+        print(json.dumps({"error": str(exc), "score": 0.0}), file=sys.stderr)
         sys.exit(1)
 
 

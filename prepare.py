@@ -1,23 +1,24 @@
 """
 prepare.py — Zero-Shot Cross-Lingual Transfer Challenge
 
-The Eris platform calls:  prepare(raw, public, private)
+Eris platform calls:  prepare(raw, public, private)
 
-Challenge framing:
-  SEEN languages  (train split, labelled): ben, eng, hin, mar, tam, tel
-  UNSEEN languages (test split, no labels): guj, kan, mal, ory, pan
+Challenge framing
+─────────────────
+  SEEN   languages → train.csv (WITH answers, agents use for few-shot/finetuning)
+  UNSEEN languages → test.csv  (WITHOUT answers, agents predict these)
 
-Raw input layout (pre-extracted from HuggingFace):
+Private ground truth
+────────────────────
+  private/answers.csv  —  ONLY  question_id, answer
+  (grade.py reads this; no other columns needed)
+
+Raw input layout
+────────────────
   raw/extracted_datasets/<lang_folder>/
-    validation/ — Arrow shards
-    test/       — Arrow shards
     dataset_dict.json
-
-Outputs:
-  public/train.csv             — seen-language questions WITH answers
-  public/test.csv              — unseen-language questions WITHOUT answers
-  public/sample_submission.csv — all-A baseline
-  private/private.csv          — unseen-language questions WITH answers (grade.py only)
+    validation/   data-*.arrow  ← seen languages use this
+    test/         data-*.arrow  ← unseen languages use this
 """
 
 from pathlib import Path
@@ -25,22 +26,14 @@ import random
 import pandas as pd
 from datasets import load_from_disk
 
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 SEED = 42
-TEST_SAMPLE_SIZE = 4500   # rows sampled per unseen language group
 
-# ── Language split — the core of the challenge ────────────────────────────────
-# Agents receive labelled data ONLY for SEEN languages.
-# They must predict answers for UNSEEN languages with no labelled examples.
+SEEN_LANGS   = {"ben", "eng", "hin", "mar", "tam", "tel"}
+UNSEEN_LANGS = {"guj", "kan", "mal", "ory", "pan"}
 
-SEEN_LANGS   = {"ben", "eng", "hin", "mar", "tam", "tel"}   # train split
-UNSEEN_LANGS = {"guj", "kan", "mal", "ory", "pan"}          # test split (evaluate on these)
-
-# Lookup table: any folder name variant → (iso_code, display_name)
-# Used when we CAN match a folder name; falls back gracefully when we can't.
-_KNOWN = {
+_LANG_LOOKUP = {
     "ben": ("ben", "Bengali"),   "bengali":   ("ben", "Bengali"),
     "eng": ("eng", "English"),   "english":   ("eng", "English"),
     "guj": ("guj", "Gujarati"),  "gujarati":  ("guj", "Gujarati"),
@@ -56,67 +49,83 @@ _KNOWN = {
 
 
 def _lang_from_folder(name: str) -> tuple[str, str]:
-    """Return (iso_code, display_name) for a folder name, with fallback."""
     key = name.lower().strip()
-    if key in _KNOWN:
-        return _KNOWN[key]
-    # Partial match — e.g. "bengali_v2" → "bengali"
-    for k, v in _KNOWN.items():
+    if key in _LANG_LOOKUP:
+        return _LANG_LOOKUP[key]
+    for k, v in _LANG_LOOKUP.items():
         if key.startswith(k) or k.startswith(key):
             return v
-    # Unknown folder: use the name itself as the code
     return (key, name.title())
 
 
-# ── Split reading ─────────────────────────────────────────────────────────────
+# ── Data loading ──────────────────────────────────────────────────────────────
 
-def _read_split(split_dir: Path) -> pd.DataFrame:
-    """
-    Read a HuggingFace split directory (Arrow or Parquet shards).
-    split_dir is e.g.  .../bengali/validation/
-    """
-    # Prefer datasets.load_from_disk — handles Arrow IPC natively
+def _load_split(lang_folder: Path, split_name: str) -> pd.DataFrame | None:
+    """Load one split from a language folder. Returns None if unavailable."""
+    # Strategy A: HuggingFace DatasetDict (dataset_dict.json present)
+    if (lang_folder / "dataset_dict.json").exists():
+        try:
+            ds_dict = load_from_disk(str(lang_folder))
+            if split_name in ds_dict:
+                df = ds_dict[split_name].to_pandas()
+                print(f"    {lang_folder.name}/{split_name}: {len(df):,} rows  "
+                      f"columns={list(df.columns)}")
+                return df
+            else:
+                print(f"    {lang_folder.name}: split '{split_name}' not in DatasetDict "
+                      f"(available: {list(ds_dict.keys())})")
+                return None
+        except Exception as exc:
+            print(f"    {lang_folder.name}: load_from_disk failed — {exc}")
+
+    # Strategy B: bare split subdirectory with Arrow/Parquet shards
+    split_dir = lang_folder / split_name
+    if not split_dir.exists():
+        print(f"    {lang_folder.name}: no {split_name}/ directory")
+        return None
+
+    # Try load_from_disk on the split directory itself
     try:
         ds = load_from_disk(str(split_dir))
         df = ds.to_pandas()
-        print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows (arrow)")
+        print(f"    {lang_folder.name}/{split_name}: {len(df):,} rows  columns={list(df.columns)}")
         return df
     except Exception:
         pass
 
-    # Fallback: raw parquet shards
+    # Try raw parquet shards
     shards = sorted(split_dir.rglob("*.parquet"))
     if shards:
         df = pd.concat([pd.read_parquet(s) for s in shards], ignore_index=True)
-        print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows "
-              f"({len(shards)} parquet shard(s))")
+        print(f"    {lang_folder.name}/{split_name}: {len(df):,} rows (parquet)  "
+              f"columns={list(df.columns)}")
         return df
 
-    # Fallback: raw arrow shards via pyarrow
+    # Try raw Arrow shards via pyarrow
     arrow_files = sorted(split_dir.rglob("*.arrow"))
     if arrow_files:
-        import pyarrow.ipc as ipc
         import pyarrow as pa
+        import pyarrow.ipc as ipc
         tables = []
         for f in arrow_files:
             with pa.memory_map(str(f), "r") as src:
                 tables.append(ipc.open_file(src).read_all())
         df = pa.concat_tables(tables).to_pandas()
-        print(f"    {split_dir.parent.name}/{split_dir.name}: {len(df):,} rows "
-              f"({len(arrow_files)} arrow shard(s))")
+        print(f"    {lang_folder.name}/{split_name}: {len(df):,} rows (arrow)  "
+              f"columns={list(df.columns)}")
         return df
 
-    raise FileNotFoundError(
-        f"No readable data files (.arrow or .parquet) found under {split_dir}"
-    )
+    print(f"    {lang_folder.name}/{split_name}: no readable data files found")
+    return None
 
 
 # ── Schema normalisation ──────────────────────────────────────────────────────
 
 def _normalise(df: pd.DataFrame, lang_code: str, lang_name: str) -> pd.DataFrame:
+    """Flatten raw MILU columns into the challenge schema."""
     df = df.copy()
 
-    # options list/sequence → flat option_a … option_d
+    # options list → flat option_a … option_d
     if "options" in df.columns:
         opts = df["options"].tolist()
         for i, letter in enumerate("abcd"):
@@ -135,10 +144,14 @@ def _normalise(df: pd.DataFrame, lang_code: str, lang_name: str) -> pd.DataFrame
     if "subject" not in df.columns:
         df["subject"] = df["domain"]
 
-    # answer → uppercase letter
+    # answer → uppercase single letter (A/B/C/D)
     if "answer" in df.columns:
         df["answer"] = df["answer"].astype(str).str.strip().str.upper()
+        # Handle integer-encoded answers: 0→A, 1→B, 2→C, 3→D
         df["answer"] = df["answer"].replace({"0": "A", "1": "B", "2": "C", "3": "D"})
+    else:
+        print(f"    WARNING: no 'answer' column found for {lang_code}. "
+              f"Available columns: {list(df.columns)}")
 
     df["language"]      = lang_code
     df["language_name"] = lang_name
@@ -155,101 +168,36 @@ def _assign_ids(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
     return df
 
 
-def _select_cols(df: pd.DataFrame, include_answer: bool) -> pd.DataFrame:
-    cols = ["question_id", "language", "language_name", "domain", "subject",
-            "question", "option_a", "option_b", "option_c", "option_d"]
-    if include_answer:
-        cols.append("answer")
-    return df[[c for c in cols if c in df.columns]]
+# ── Column selection ──────────────────────────────────────────────────────────
 
+QUESTION_COLS = [
+    "question_id", "language", "language_name", "domain", "subject",
+    "question", "option_a", "option_b", "option_c", "option_d",
+]
 
-# ── Directory scanning ────────────────────────────────────────────────────────
+def _public_question_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """All question columns, NO answer — for test.csv."""
+    return df[[c for c in QUESTION_COLS if c in df.columns]]
 
-def _load_lang_folder(lang_folder: Path, lang_code: str, lang_name: str,
-                      split_name: str) -> pd.DataFrame | None:
-    """Load one split (validation or test) from a language folder."""
-    # Strategy A: DatasetDict (dataset_dict.json present)
-    if (lang_folder / "dataset_dict.json").exists():
-        try:
-            ds_dict = load_from_disk(str(lang_folder))
-            if split_name in ds_dict:
-                df = ds_dict[split_name].to_pandas()
-                df = _normalise(df, lang_code, lang_name)
-                print(f"    {lang_folder.name}/{split_name}: {len(df):,} rows (DatasetDict)")
-                return df
-        except Exception as exc:
-            print(f"    {lang_folder.name}: DatasetDict load failed ({exc}), trying split dir...")
+def _public_train_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """All question columns plus answer — for train.csv."""
+    cols = QUESTION_COLS + ["answer"]
+    present = [c for c in cols if c in df.columns]
+    if "answer" not in present:
+        raise RuntimeError(
+            f"'answer' column missing from training data. "
+            f"Available columns: {list(df.columns)}"
+        )
+    return df[present]
 
-    # Strategy B: bare split subdirectory
-    split_dir = lang_folder / split_name
-    if split_dir.exists():
-        try:
-            df = _read_split(split_dir)
-            df = _normalise(df, lang_code, lang_name)
-            return df
-        except Exception as exc:
-            print(f"    SKIPPED {lang_folder.name}/{split_name}: {exc}")
-
-    return None
-
-
-def _collect_splits(datasets_dir: Path) -> tuple[list, list]:
-    """
-    Load data for all language folders.
-    SEEN languages  → train_frames  (validation split, answers kept)
-    UNSEEN languages → test_frames  (test split, answers stripped for public)
-
-    Both seen and unseen use their validation split for train (seen)
-    and test (unseen) respectively to maximise data quality.
-    """
-    train_frames: list[pd.DataFrame] = []
-    test_frames:  list[pd.DataFrame] = []
-
-    lang_folders = sorted(p for p in datasets_dir.iterdir() if p.is_dir())
-    print(f"  Language folders: {[p.name for p in lang_folders]}\n")
-
-    for lang_folder in lang_folders:
-        lang_code, lang_name = _lang_from_folder(lang_folder.name)
-
-        if lang_code in SEEN_LANGS:
-            # Seen language → use validation split as labelled training data
-            df = _load_lang_folder(lang_folder, lang_code, lang_name, "validation")
-            if df is not None:
-                train_frames.append(df)
-
-        elif lang_code in UNSEEN_LANGS:
-            # Unseen language → use test split as the evaluation set
-            df = _load_lang_folder(lang_folder, lang_code, lang_name, "test")
-            if df is None:
-                # Fallback to validation split if test is unavailable
-                df = _load_lang_folder(lang_folder, lang_code, lang_name, "validation")
-            if df is not None:
-                test_frames.append(df)
-
-        else:
-            print(f"    {lang_folder.name} ({lang_code}): not in SEEN or UNSEEN — skipping")
-
-    return train_frames, test_frames
-
-
-def _find_datasets_dir(raw: Path) -> Path:
-    """Return the directory that directly contains per-language subfolders."""
-    # Common layouts:
-    #   raw/extracted_datasets/<lang>/...
-    #   raw/<lang>/...
-    candidate = raw / "extracted_datasets"
-    if candidate.is_dir() and any(candidate.iterdir()):
-        return candidate
-    # Fall back to raw itself if it contains subdirs with validation/ or test/ inside
-    if any(True for _ in raw.rglob("validation")):
-        # Check if extracted_datasets is nested further
-        for child in raw.iterdir():
-            if child.is_dir() and any(child.rglob("validation")):
-                # Return the immediate parent of the language folders
-                val_examples = list(child.rglob("validation"))
-                if val_examples:
-                    return val_examples[0].parent.parent
-    return raw
+def _answers_only(df: pd.DataFrame) -> pd.DataFrame:
+    """ONLY question_id + answer — for private/answers.csv."""
+    if "answer" not in df.columns:
+        raise RuntimeError(
+            f"'answer' column missing — cannot write answers.csv. "
+            f"Available columns: {list(df.columns)}"
+        )
+    return df[["question_id", "answer"]]
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -261,77 +209,92 @@ def prepare(raw: Path, public: Path, private: Path) -> None:
     public.mkdir(parents=True, exist_ok=True)
     private.mkdir(parents=True, exist_ok=True)
 
-    # Print full directory tree for diagnosis
+    # Show full directory tree for diagnostics
     print(f"raw dir: {raw}")
     all_dirs = sorted(p for p in raw.rglob("*") if p.is_dir())
     print("Directory tree:")
-    for d in all_dirs[:60]:
+    for d in all_dirs[:80]:
         print(f"  {d.relative_to(raw)}")
-    if len(all_dirs) > 60:
-        print(f"  ... ({len(all_dirs)} dirs total)")
+    if len(all_dirs) > 80:
+        print(f"  ... ({len(all_dirs)} total dirs)")
     print()
 
-    datasets_dir = _find_datasets_dir(raw)
-    print(f"Scanning from: {datasets_dir}\n")
+    # Find the directory that holds language subfolders
+    datasets_dir = raw / "extracted_datasets"
+    if not (datasets_dir.is_dir() and any(datasets_dir.iterdir())):
+        datasets_dir = raw
 
-    train_frames, test_frames = _collect_splits(datasets_dir)
+    print(f"Scanning: {datasets_dir}")
+    lang_folders = sorted(p for p in datasets_dir.iterdir() if p.is_dir())
+    print(f"Language folders: {[p.name for p in lang_folders]}\n")
+
+    train_frames: list[pd.DataFrame] = []
+    test_frames:  list[pd.DataFrame] = []
+
+    for lang_folder in lang_folders:
+        lang_code, lang_name = _lang_from_folder(lang_folder.name)
+
+        if lang_code in SEEN_LANGS:
+            df = _load_split(lang_folder, "validation")
+            if df is not None:
+                df = _normalise(df, lang_code, lang_name)
+                train_frames.append(df)
+
+        elif lang_code in UNSEEN_LANGS:
+            df = _load_split(lang_folder, "test")
+            if df is None:
+                df = _load_split(lang_folder, "validation")
+            if df is not None:
+                df = _normalise(df, lang_code, lang_name)
+                test_frames.append(df)
+
+        else:
+            print(f"  {lang_folder.name} ({lang_code}): not SEEN or UNSEEN — skipping")
 
     if not train_frames:
-        raise RuntimeError(
-            f"No validation splits loaded from {datasets_dir}. "
-            "See directory tree above."
-        )
+        raise RuntimeError("No seen-language (train) data loaded. Check directory tree above.")
     if not test_frames:
-        raise RuntimeError(
-            f"No test splits loaded from {datasets_dir}. "
-            "See directory tree above."
-        )
+        raise RuntimeError("No unseen-language (test) data loaded. Check directory tree above.")
 
-    # ── train.csv (seen languages, labelled) ──────────────────────────────────
+    # ── train.csv — seen languages WITH answers ───────────────────────────────
     train_df = pd.concat(train_frames, ignore_index=True)
     train_df = train_df.sample(frac=1, random_state=SEED).reset_index(drop=True)
     train_df = _assign_ids(train_df, "train")
-    _select_cols(train_df, include_answer=True).to_csv(
-        public / "train.csv", index=False, encoding="utf-8-sig"
-    )
-    print(f"\ntrain.csv          → {len(train_df):,} rows  "
-          f"(languages: {sorted(train_df['language'].unique())})")
+    _public_train_cols(train_df).to_csv(public / "train.csv", index=False, encoding="utf-8-sig")
+    print(f"\ntrain.csv      → {len(train_df):,} rows  "
+          f"languages={sorted(train_df['language'].unique())}  "
+          f"has_answer={'answer' in train_df.columns}")
 
-    # ── test.csv + private.csv (unseen languages, labels withheld) ────────────
+    # ── test.csv — unseen languages WITHOUT answers ───────────────────────────
     test_full = pd.concat(test_frames, ignore_index=True)
-
-    # Sample up to TEST_SAMPLE_SIZE rows, stratified by language
     test_df = (
         test_full
         .groupby("language", group_keys=False)
-        .apply(lambda g: g.sample(
-            min(len(g), max(1, round(TEST_SAMPLE_SIZE * len(g) / len(test_full)))),
-            random_state=SEED,
-        ))
+        .apply(lambda g: g.sample(min(len(g), 900), random_state=SEED))
         .reset_index(drop=True)
     )
     test_df = _assign_ids(test_df, "test")
+    _public_question_cols(test_df).to_csv(public / "test.csv", index=False, encoding="utf-8-sig")
+    print(f"test.csv       → {len(test_df):,} rows  "
+          f"languages={sorted(test_df['language'].unique())}")
 
-    _select_cols(test_df, include_answer=False).to_csv(
-        public / "test.csv", index=False, encoding="utf-8-sig"
-    )
-    print(f"test.csv           → {len(test_df):,} rows")
+    # ── private/answers.csv — ONLY question_id + answer ──────────────────────
+    _answers_only(test_df).to_csv(private / "answers.csv", index=False, encoding="utf-8-sig")
+    print(f"answers.csv    → {len(test_df):,} rows  columns=[question_id, answer]")
 
-    _select_cols(test_df, include_answer=True).to_csv(
-        private / "private.csv", index=False, encoding="utf-8-sig"
-    )
-    print(f"private.csv        → {len(test_df):,} rows")
-
+    # ── sample_submission.csv — all-A baseline ────────────────────────────────
     pd.DataFrame({
-        "question_id": _select_cols(test_df, include_answer=False)["question_id"],
+        "question_id": test_df["question_id"],
         "answer": "A",
     }).to_csv(public / "sample_submission.csv", index=False)
-    print(f"sample_submission  → {len(test_df):,} rows")
+    print(f"sample_submission.csv → {len(test_df):,} rows")
 
-    print(f"\nTrain languages (seen)  : {sorted(train_df['language'].unique())}")
-    print(f"Test  languages (unseen): {sorted(test_df['language'].unique())}")
-    print("\nTest language distribution:")
-    print(test_df["language"].value_counts().to_string())
+    # Verify answer distribution (catches bad normalization)
+    print(f"\nAnswer distribution in answers.csv:")
+    print(test_df["answer"].value_counts().sort_index().to_string())
+    print(f"\nTrain answer distribution:")
+    print(train_df["answer"].value_counts().sort_index().to_string())
+
     print("\nDone.")
 
 
